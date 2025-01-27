@@ -1,48 +1,63 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { POST } from '../route';
 import { ExcelService } from '@/services/excel/ExcelService';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import path from 'path';
+import { ValidationResult } from '@/validations/productSchema';
 
-// ExcelServiceのモック
-jest.mock('@/services/excel/ExcelService', () => {
-  return {
-    ExcelService: jest.fn().mockImplementation(() => ({
-      validateExcelFile: jest.fn()
-    })),
-    isValidExcelFile: jest.fn()
-  };
-});
+// すべてのモックを先に宣言
+jest.mock('next/server');
+jest.mock('@/services/excel/ExcelService');
+jest.mock('fs');
+jest.mock('fs/promises');
 
-// fsのモック
-jest.mock('fs', () => ({
-  existsSync: jest.fn(),
-  mkdirSync: jest.fn(),
-  unlinkSync: jest.fn(),
+const nextJson = jest.fn().mockImplementation((data, options) => ({
+  ...data,
+  status: options?.status || 200,
+  json: async () => data
 }));
 
-// fs/promisesのモック
-jest.mock('fs/promises', () => ({
-  writeFile: jest.fn(),
-}));
+(NextResponse as jest.Mocked<typeof NextResponse>).json = nextJson;
+
+// fsのモック設定
+// モックの作成
+const mockWriteFile = jest.fn().mockResolvedValue(undefined);
+const mockExistsSync = jest.fn().mockReturnValue(true);
+const mockMkdirSync = jest.fn().mockReturnValue(undefined);
+const mockUnlinkSync = jest.fn().mockImplementation(() => undefined);
+
+// モックの設定
+jest.spyOn(fsPromises, 'writeFile').mockImplementation(mockWriteFile);
+jest.spyOn(fs, 'existsSync').mockImplementation(mockExistsSync);
+jest.spyOn(fs, 'mkdirSync').mockImplementation(mockMkdirSync);
+jest.spyOn(fs, 'unlinkSync').mockImplementation(mockUnlinkSync);
 
 describe('POST /api/upload', () => {
-  let mockFormData: FormData;
+  let mockValidateExcelFile: jest.Mock;
+  const mockIsValidExcelFile = jest.spyOn(ExcelService, 'isValidExcelFile');
+
+  const createFormData = (file?: File) => {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+    return formData;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockFormData = new FormData();
-
-    // ディレクトリ存在チェックのモック
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
+    mockValidateExcelFile = jest.fn().mockResolvedValue({ isValid: true, data: [] });
+    (ExcelService as jest.MockedClass<typeof ExcelService>).mockImplementation(() => ({
+      validateExcelFile: mockValidateExcelFile
+    }));
+    mockIsValidExcelFile.mockReturnValue(true);
   });
 
   it('ファイルがアップロードされていない場合は400エラーを返す', async () => {
-    const request = new NextRequest('http://localhost/api/upload', {
-      method: 'POST',
-      body: mockFormData,
-    });
+    const request = {
+      formData: () => Promise.resolve(createFormData())
+    } as unknown as NextRequest;
 
     const response = await POST(request);
     const data = await response.json();
@@ -53,14 +68,12 @@ describe('POST /api/upload', () => {
 
   it('不正な拡張子のファイルの場合は400エラーを返す', async () => {
     const file = new File(['test content'], 'test.csv', { type: 'text/csv' });
-    mockFormData.append('file', file);
+    const formData = createFormData(file);
+    const request = {
+      formData: () => Promise.resolve(formData)
+    } as unknown as NextRequest;
 
-    (ExcelService.isValidExcelFile as jest.Mock).mockReturnValue(false);
-
-    const request = new NextRequest('http://localhost/api/upload', {
-      method: 'POST',
-      body: mockFormData,
-    });
+    mockIsValidExcelFile.mockReturnValue(false);
 
     const response = await POST(request);
     const data = await response.json();
@@ -71,18 +84,15 @@ describe('POST /api/upload', () => {
 
   it('ExcelServiceの検証でエラーの場合は400エラーを返す', async () => {
     const file = new File(['test content'], 'test.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    mockFormData.append('file', file);
+    const formData = createFormData(file);
+    const request = {
+      formData: () => Promise.resolve(formData)
+    } as unknown as NextRequest;
 
-    (ExcelService.isValidExcelFile as jest.Mock).mockReturnValue(true);
-    const mockExcelService = new ExcelService();
-    (mockExcelService.validateExcelFile as jest.Mock).mockResolvedValue({
+    mockIsValidExcelFile.mockReturnValue(true);
+    mockValidateExcelFile.mockResolvedValue({
       isValid: false,
       errors: ['データが不正です', '商品コードが重複しています']
-    });
-
-    const request = new NextRequest('http://localhost/api/upload', {
-      method: 'POST',
-      body: mockFormData,
     });
 
     const response = await POST(request);
@@ -94,11 +104,13 @@ describe('POST /api/upload', () => {
 
   it('正常にアップロードと検証が成功する場合は200を返す', async () => {
     const file = new File(['test content'], 'test.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    mockFormData.append('file', file);
+    const formData = createFormData(file);
+    const request = {
+      formData: () => Promise.resolve(formData)
+    } as unknown as NextRequest;
 
-    (ExcelService.isValidExcelFile as jest.Mock).mockReturnValue(true);
-    const mockExcelService = new ExcelService();
-    (mockExcelService.validateExcelFile as jest.Mock).mockResolvedValue({
+    mockIsValidExcelFile.mockReturnValue(true);
+    mockValidateExcelFile.mockResolvedValue({
       isValid: true,
       data: [
         {
@@ -108,11 +120,6 @@ describe('POST /api/upload', () => {
           version: 'v1'
         }
       ]
-    });
-
-    const request = new NextRequest('http://localhost/api/upload', {
-      method: 'POST',
-      body: mockFormData,
     });
 
     const response = await POST(request);
@@ -131,15 +138,13 @@ describe('POST /api/upload', () => {
 
   it('ファイル処理でエラーが発生する場合は500エラーを返す', async () => {
     const file = new File(['test content'], 'test.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    mockFormData.append('file', file);
+    const formData = createFormData(file);
+    const request = {
+      formData: () => Promise.resolve(formData)
+    } as unknown as NextRequest;
 
-    (ExcelService.isValidExcelFile as jest.Mock).mockReturnValue(true);
-    (fsPromises.writeFile as jest.Mock).mockRejectedValue(new Error('ファイル書き込みエラー'));
-
-    const request = new NextRequest('http://localhost/api/upload', {
-      method: 'POST',
-      body: mockFormData,
-    });
+    mockIsValidExcelFile.mockReturnValue(true);
+    mockWriteFile.mockRejectedValue(new Error('ファイル書き込みエラー'));
 
     const response = await POST(request);
     const data = await response.json();

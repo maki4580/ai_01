@@ -8,5 +8,9 @@ module.exports = {
   },
   transform: {
     '^.+\\.tsx?$': 'ts-jest'
+  },
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  testEnvironmentOptions: {
+    url: 'http://localhost'
   }
 };
